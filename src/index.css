@@ -1,0 +1,30 @@
+/* src/index.css */
+
+/* Tailwind の読み込み */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 全体の背景など軽めに調整 */
+body {
+  @apply bg-slate-50 text-slate-900;
+}
+
+/* Masonry 用のスタイル */
+.my-masonry-grid {
+  display: -webkit-box;
+  display: -ms-flexbox;
+  display: flex;
+  align-items: flex-start;
+  margin-left: -12px;
+  width: calc(100% + 24px);
+}
+
+.my-masonry-grid_column {
+  padding-left: 12px;
+  background-clip: padding-box;
+}
+
+.my-masonry-grid_column > div {
+  margin-bottom: 12px;
+}
