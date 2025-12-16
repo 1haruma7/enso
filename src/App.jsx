@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   collection,
   getDocs,
@@ -24,6 +24,7 @@ import Layout from "./Layout.jsx";
 import Home from "./Home.jsx";
 import AuthModal from "./AuthModal.jsx";
 import { getAuthClient, getDb } from "./firebaseClient.js";
+import { parseTags } from "./tagUtils.js";
 
 const SEARCH_HISTORY_KEY = "yaggi3d_search_history";
 const MAX_HISTORY = 10;
@@ -76,21 +77,13 @@ function persistSavedItems(items) {
   // クラウド保存のためローカルは使用しない。
 }
 
-function loadLikedItems() {
-  return [];
-}
-
-function persistLikedItems(items) {
-  // クラウド保存優先。ローカルキャッシュは保持しない。
-}
-
 const mergeCustomItems = (current, incoming) => {
   const map = new Map();
   const add = (item) => {
     if (!item) return;
     const key = item.source_url || item.id;
     if (!key) return;
-    map.set(key, { ...item, isCustom: true });
+    map.set(key, { ...item, tags: parseTags(item.tags), isCustom: true });
   };
   current.forEach(add);
   incoming.forEach(add);
@@ -106,10 +99,35 @@ const isSameItem = (a, b) => {
   return false;
 };
 
-const getLikeKey = (item) => {
-  const rawKey = item?.source_url || item?.image_url || item?.id;
-  if (!rawKey) return null;
-  return encodeURIComponent(rawKey);
+const getItemKey = (item) => {
+  const key = item?.source_url || item?.image_url || item?.id;
+  return key || null;
+};
+
+const getLikeDocId = (item) => {
+  const key = getItemKey(item);
+  return key ? encodeURIComponent(key) : null;
+};
+
+const LOCAL_LIKED_KEY = "enso_guest_likes";
+
+const loadGuestLikedDocIds = () => {
+  if (typeof window === "undefined") return [];
+  try {
+    const stored = localStorage.getItem(LOCAL_LIKED_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+};
+
+const persistGuestLikedDocIds = (ids) => {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(LOCAL_LIKED_KEY, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
 };
 
 const SECTION_BY_PATH = {
@@ -132,11 +150,11 @@ function App() {
     getSectionFromPath(window.location.pathname)
   );
   const [savedItems, setSavedItems] = useState([]);
-  const [likedItems, setLikedItems] = useState([]);
+  const [savedItemsLoaded, setSavedItemsLoaded] = useState(false);
   const [customItems, setCustomItems] = useState(() => loadCustomItems());
-  const [likeCounts, setLikeCounts] = useState({});
   const [showNotifications, setShowNotifications] = useState(false);
   const [showMessages, setShowMessages] = useState(false);
+  const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [searchHistory, setSearchHistory] = useState(() =>
@@ -148,8 +166,12 @@ function App() {
   const [authMode, setAuthMode] = useState("login");
   const [authLoading, setAuthLoading] = useState(false);
   const [authError, setAuthError] = useState("");
-  const [homeResetToken, setHomeResetToken] = useState(0);
   const [homeClearToken, setHomeClearToken] = useState(0);
+  const [likedItems, setLikedItems] = useState([]);
+  const [likeCounts, setLikeCounts] = useState({});
+  const [guestLikedDocIds, setGuestLikedDocIds] = useState(() =>
+    loadGuestLikedDocIds()
+  );
 
   useEffect(() => {
     document.title = "enso";
@@ -170,6 +192,7 @@ function App() {
 
   useEffect(() => {
     setSavedItems([]);
+    setSavedItemsLoaded(false);
     const db = getDb();
     if (!db || !authUser) return;
 
@@ -177,6 +200,7 @@ function App() {
     const unsubscribe = onSnapshot(
       savedRef,
       (snapshot) => {
+        setSavedItemsLoaded(true);
         const items = snapshot.docs.map((docSnap) => ({
           ...docSnap.data(),
           id: docSnap.id,
@@ -185,6 +209,7 @@ function App() {
       },
       (err) => {
         console.error("Firestore savedItems onSnapshot error:", err);
+        setSavedItemsLoaded(true);
       }
     );
 
@@ -192,28 +217,27 @@ function App() {
   }, [authUser]);
 
   useEffect(() => {
+    setLikedItems([]);
     const db = getDb();
-    if (!db) return;
+    if (!db || !authUser) return;
 
+    const likedRef = collection(db, "users", authUser.uid, "likedItems");
     const unsubscribe = onSnapshot(
-      collection(db, "likeCounts"),
+      likedRef,
       (snapshot) => {
-        const counts = {};
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          if (typeof data?.count === "number") {
-            counts[docSnap.id] = Math.max(0, data.count);
-          }
-        });
-        setLikeCounts(counts);
+        const items = snapshot.docs.map((docSnap) => ({
+          ...docSnap.data(),
+          id: docSnap.id,
+        }));
+        setLikedItems(items);
       },
       (err) => {
-        console.error("Firestore likeCounts onSnapshot error:", err);
+        console.error("Firestore likedItems onSnapshot error:", err);
       }
     );
 
     return () => unsubscribe?.();
-  }, []);
+  }, [authUser]);
 
   useEffect(() => {
     const db = getDb();
@@ -263,43 +287,32 @@ function App() {
     };
   }, []);
 
-  const getLikeCountForItem = (item) => {
-    const key = getLikeKey(item);
-    if (!key) return 0;
-    return likeCounts[key] || 0;
-  };
-
-  const syncLikeCountToFirestore = async (item, delta) => {
+  useEffect(() => {
     const db = getDb();
-    if (!db || !delta) return;
-    const likeKey = getLikeKey(item);
-    if (!likeKey) return;
-
-    const likeDocRef = doc(db, "likeCounts", likeKey);
-    try {
-      await runTransaction(db, async (transaction) => {
-        const snap = await transaction.get(likeDocRef);
-        const current = snap.exists() && typeof snap.data()?.count === "number"
-          ? snap.data().count
-          : 0;
-        const next = Math.max(0, current + delta);
-        transaction.set(
-          likeDocRef,
-          {
-            count: next,
-            title: item.title || "Untitled",
-            source: item.source || "Unknown",
-            source_url: item.source_url || "",
-            image_url: item.image_url || "",
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-      });
-    } catch (err) {
-      console.error("Failed to sync like count to Firestore:", err);
+    if (!db) {
+      console.warn("Firestore config not found. Falling back to local storage only.");
+      return;
     }
-  };
+    const countsRef = collection(db, "likeCounts");
+    const unsubscribe = onSnapshot(
+      countsRef,
+      (snapshot) => {
+        const counts = {};
+        snapshot.docs.forEach((docSnap) => {
+          const data = docSnap.data();
+          if (typeof data?.count === "number") {
+            counts[docSnap.id] = Math.max(0, data.count);
+          }
+        });
+        setLikeCounts(counts);
+      },
+      (err) => {
+        console.error("Firestore likeCounts onSnapshot error:", err);
+      }
+    );
+
+    return () => unsubscribe?.();
+  }, []);
 
   const handleSaveItem = (item) => {
     if (!authUser) {
@@ -307,8 +320,8 @@ function App() {
       return;
     }
     const db = getDb();
-    const key = getLikeKey(item);
-    if (!db || !key) return;
+    const docId = getLikeDocId(item);
+    if (!db || !docId) return;
 
     setSavedItems((prev) => {
       const exists = prev.some((it) => isSameItem(it, item));
@@ -318,7 +331,7 @@ function App() {
       return [{ ...item, savedBy: authUser.uid }, ...prev];
     });
 
-    const ref = doc(db, "users", authUser.uid, "savedItems", key);
+    const ref = doc(db, "users", authUser.uid, "savedItems", docId);
     const exists = savedItems.some((it) => isSameItem(it, item));
     (async () => {
       try {
@@ -341,32 +354,127 @@ function App() {
     })();
   };
 
-  const handleLikeItem = (item) => {
-    setLikedItems((prev) => {
-      const exists = prev.some((it) => isSameItem(it, item));
-      const delta = exists ? -1 : 1;
-      const likeKey = getLikeKey(item);
-
-      if (likeKey) {
-        setLikeCounts((prevCounts) => {
-          const nextCount = Math.max(0, (prevCounts[likeKey] || 0) + delta);
-          return { ...prevCounts, [likeKey]: nextCount };
-        });
-        syncLikeCountToFirestore(item, delta);
-      }
-
-      if (exists) {
-        return prev.filter((it) => !isSameItem(it, item));
-      }
-      return [item, ...prev];
-    });
+  const syncLikeCount = async (item, delta) => {
+    if (!delta) return;
+    const db = getDb();
+    if (!db) return;
+    const docId = getLikeDocId(item);
+    if (!docId) return;
+    const likeRef = doc(db, "likeCounts", docId);
+    try {
+      await runTransaction(db, async (transaction) => {
+        const snapshot = await transaction.get(likeRef);
+        const current =
+          snapshot.exists() && typeof snapshot.data()?.count === "number"
+            ? snapshot.data().count
+            : 0;
+        const next = Math.max(0, current + delta);
+        transaction.set(
+          likeRef,
+          {
+            count: next,
+            title: item.title || "Untitled",
+            source: item.source || "Unknown",
+            source_url: item.source_url || "",
+            image_url: item.image_url || "",
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      });
+    } catch (err) {
+      console.error("Failed to sync like count to Firestore:", err);
+    }
   };
+
+  const handleLikeItem = (item) => {
+    const db = getDb();
+    const docId = getLikeDocId(item);
+    if (!docId) {
+      return;
+    }
+    const alreadyLikedByFirestore = likedItems.some((liked) =>
+      isSameItem(liked, item)
+    );
+    const alreadyLikedByGuest = guestLikedDocIds.includes(docId);
+    const alreadyLiked = alreadyLikedByFirestore || alreadyLikedByGuest;
+    const delta = alreadyLiked ? -1 : 1;
+
+    if (authUser) {
+      setLikedItems((prev) =>
+        alreadyLiked
+          ? prev.filter((liked) => !isSameItem(liked, item))
+          : [{ ...item, likedBy: authUser.uid }, ...prev]
+      );
+    } else {
+      setGuestLikedDocIds((prev) => {
+        const next = alreadyLiked
+          ? prev.filter((id) => id !== docId)
+          : [...prev, docId];
+        persistGuestLikedDocIds(next);
+        return next;
+      });
+    }
+
+    setLikeCounts((prev) => {
+      const nextCount = Math.max(0, (prev[docId] || 0) + delta);
+      return { ...prev, [docId]: nextCount };
+    });
+    syncLikeCount(item, delta);
+
+    if (!db || !authUser) {
+      return;
+    }
+
+    const likeRef = doc(db, "users", authUser.uid, "likedItems", docId);
+    (async () => {
+      try {
+        if (alreadyLiked) {
+          await deleteDoc(likeRef);
+        } else {
+          await setDoc(
+            likeRef,
+            {
+              ...item,
+              likedBy: authUser.uid,
+              likedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        }
+      } catch (err) {
+        console.error("Failed to toggle liked item:", err);
+      }
+    })();
+  };
+
+  const getLikeCountForItem = (item) => {
+    const docId = getLikeDocId(item);
+    if (!docId) return 0;
+    return likeCounts[docId] || 0;
+  };
+
+  const likedDocIds = useMemo(() => {
+    const ids = new Set();
+    likedItems.forEach((liked) => {
+      const docId = getLikeDocId(liked);
+      if (docId) {
+        ids.add(docId);
+      }
+    });
+    guestLikedDocIds.forEach((docId) => {
+      if (docId) {
+        ids.add(docId);
+      }
+    });
+    return ids;
+  }, [likedItems, guestLikedDocIds]);
 
   const handleAddCustomItem = async (item) => {
     const trimmedTitle = item.title?.trim();
     if (!trimmedTitle) return;
     const trimmedImage = item.image_url?.trim() || "";
-    const trimmedSource = item.source?.trim() || "Custom";
+    const trimmedSource = item.source?.trim() || "カスタム";
     const trimmedSourceUrl = item.source_url?.trim() || "";
     const customId = `custom-${Date.now()}`;
     const canonicalSourceUrl =
@@ -379,6 +487,7 @@ function App() {
       source: trimmedSource,
       image_url: trimmedImage,
       source_url: canonicalSourceUrl,
+      tags: parseTags(item.tags),
       isCustom: true,
     };
     setCustomItems((prev) => [newItem, ...prev]);
@@ -406,13 +515,10 @@ function App() {
       window.history.pushState({ section }, "", path);
     }
     if (section === "home") {
+      setSearchText("");
       setQuery("");
       window.scrollTo({ top: 0, behavior: "smooth" });
-      if (activeSection === "home") {
-        setHomeClearToken((t) => t + 1);
-      } else {
-        setHomeResetToken((t) => t + 1);
-      }
+      setHomeClearToken((t) => t + 1);
     }
     setActiveSection(section);
     setShowNotifications(false);
@@ -443,17 +549,20 @@ function App() {
 
   const handleSearchSubmit = (e) => {
     e?.preventDefault();
-    const trimmed = query.trim();
+    const trimmed = searchText.trim();
     if (!trimmed) {
+      setQuery("");
       setShowSuggestions(false);
       return;
     }
+    setQuery(trimmed);
     saveSearchHistory(trimmed);
     setSearchHistory(getSearchHistory());
     setShowSuggestions(false);
   };
 
   const handleSuggestionClick = (value) => {
+    setSearchText(value);
     setQuery(value);
     saveSearchHistory(value);
     setSearchHistory(getSearchHistory());
@@ -461,7 +570,10 @@ function App() {
   };
 
   const handleSearchChange = (value) => {
-    setQuery(value);
+    setSearchText(value);
+    const trimmed = value.trim();
+    // Enter で確定した query のみ検索に使う（入力中は画面を切り替えない）
+    if (!trimmed) setQuery("");
     setShowSuggestions(true);
   };
 
@@ -474,6 +586,7 @@ function App() {
   };
 
   const handleSearchClear = () => {
+    setSearchText("");
     setQuery("");
     setShowSuggestions(false);
   };
@@ -559,7 +672,7 @@ function App() {
       onToggleMessages={toggleMessages}
       showNotifications={showNotifications}
       showMessages={showMessages}
-      searchValue={query}
+      searchValue={searchText}
       onSearchChange={handleSearchChange}
       onSearchSubmit={handleSearchSubmit}
       onSearchFocus={handleSearchFocus}
@@ -570,12 +683,17 @@ function App() {
       onClearSearch={handleSearchClear}
       popularKeywords={POPULAR_KEYWORDS}
       searchEnabled={searchEnabled}
-      searchPlaceholder="3Dモデルを検索（例: iphone stand, drone, figure ...）"
+      searchPlaceholder="3Dモデルを検索"
       user={authUser}
       authReady={authReady}
       onRequestAuth={() => handleOpenAuth("login")}
       onLogout={handleLogout}
       onHomeClick={() => {
+        if (typeof window !== "undefined" && window.location) {
+          window.location.reload();
+          return;
+        }
+        setSearchText("");
         setQuery("");
         setHomeClearToken((t) => t + 1);
       }}
@@ -583,17 +701,17 @@ function App() {
       <Home
         activeTab={activeSection}
         savedItems={savedItems}
+        savedItemsLoaded={savedItemsLoaded}
         onSaveItem={handleSaveItem}
-        likedItems={likedItems}
+        likedDocIds={likedDocIds}
         onLikeItem={handleLikeItem}
         getLikeCountForItem={getLikeCountForItem}
         customItems={customItems}
         onAddCustomItem={handleAddCustomItem}
-      query={query}
-      homeResetToken={homeResetToken}
-      homeClearToken={homeClearToken}
-      user={authUser}
-    />
+        query={query}
+        homeClearToken={homeClearToken}
+        user={authUser}
+      />
     </Layout>
     <AuthModal
       open={showAuthModal}

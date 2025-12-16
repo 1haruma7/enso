@@ -12,6 +12,7 @@ import {
   ClockIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
+import ensoLogo from "/enso.svg";
 
 const navItems = [
   { id: "home", label: "ホーム", Icon: HomeIcon },
@@ -81,8 +82,9 @@ export default function Layout({
       <aside className="fixed inset-y-0 left-0 z-50 flex w-16 flex-col items-center gap-6 border-r bg-white/95 py-4">
         <button
           type="button"
-          className="flex h-10 w-10 items-center justify-center rounded-full bg-blue-500 text-xs font-bold text-white shadow-sm"
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-gray-200 bg-white shadow-sm"
           title="enso"
+          aria-label="enso ホーム"
           onClick={() => {
             closeProfilePanel();
             if (activeSection === "home") {
@@ -92,7 +94,12 @@ export default function Layout({
             }
           }}
         >
-          E
+          <img
+            src={ensoLogo}
+            alt="enso"
+            className="h-9 w-9 rounded-full object-cover"
+            draggable="false"
+          />
         </button>
 
         {navItems.map((item) => {
@@ -213,8 +220,8 @@ export default function Layout({
       {/* ===== 右側（ヘッダー＋コンテンツ） ===== */}
       <div className="ml-16 flex min-h-screen flex-1 flex-col">
         {/* 上部に固定される検索バー */}
-        <header className="sticky top-0 z-40 border-b bg-white/90 backdrop-blur">
-          <div className="mx-auto flex w-full max-w-7xl items-center gap-4 px-6 py-3">
+        <header className="fixed left-16 right-0 top-0 z-40 h-[76px] border-b bg-white/90 backdrop-blur">
+          <div className="mx-auto flex h-full w-full max-w-7xl items-center gap-4 px-6 py-3">
             {/* ページ上部を占有する検索入力 */}
             <form onSubmit={onSearchSubmit} className="relative flex-1">
             <div
@@ -252,7 +259,7 @@ export default function Layout({
             </div>
 
               {shouldShowSuggestions && (
-                <div className="absolute left-0 right-0 top-[calc(100%+12px)] z-50 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-lg">
+                <div className="absolute left-0 right-0 top-[calc(100%+12px)] z-50 max-h-[60vh] overflow-y-auto overscroll-contain rounded-xl border border-gray-200 bg-white shadow-lg">
                   {searchHistory.length > 0 && (
                     <div className="border-b border-gray-100 p-2">
                       <p className="px-3 py-1 text-xs text-gray-500">
@@ -317,7 +324,7 @@ export default function Layout({
         </header>
 
         {/* メインコンテンツ */}
-        <main className="flex-1">
+        <main className="flex-1" style={{ paddingTop: `${PANEL_TOP_OFFSET}px` }}>
           {children}
         </main>
       </div>
@@ -446,8 +453,8 @@ const TERMS_SECTIONS = [
   {
     title: "第5条（利用者の年齢）",
     content: [
-      "本サービスは13歳以上のユーザーが利用できます。",
-      "13歳〜18歳のユーザーは、保護者の同意を得たうえで利用してください。",
+      "未成年の方は年齢に関わらず、保護者の同意を得たうえで利用してください。",
+      "保護者の同意が確認できない場合、本サービスの利用をお断りする場合があります。",
     ],
   },
   {
@@ -583,8 +590,8 @@ const PRIVACY_SECTIONS = [
   {
     title: "第8条（未成年の利用）",
     content: [
-      "本サービスは13歳以上が利用可能です。",
-      "13〜18歳は保護者の同意を得て利用してください。",
+      "未成年の方は必ず保護者の同意を得て利用してください。",
+      "同意が得られない場合は利用を控えてください。",
     ],
   },
   {
